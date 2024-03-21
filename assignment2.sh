@@ -1,118 +1,131 @@
 #!/bin/bash
 
-# Function to check if a package is installed
-package_installed() {
-    dpkg -l "$1" &> /dev/null
-}
+# Variables
+netplan_file="/etc/netplan/01-netcfg.yaml"
+hosts_file="/etc/hosts"
 
-# Function to add a line to a file if it doesn't exist
-add_line_to_file() {
-    grep -qF "$1" "$2" || echo "$1" >> "$2"
-}
-
-# Function to ensure a directory exists
-ensure_directory() {
-    [ -d "$1" ] || mkdir -p "$1"
-}
-
-# Function to ensure a user exists with proper configurations
-ensure_user() {
-    local username=$1
-    local ssh_key=$2
-    
-    if ! id "$username" &>/dev/null; then
-        useradd -m -s /bin/bash "$username"
+# Functions
+function check_software() {
+    echo -e "\nChecking software installation..."
+    if ! dpkg -l | grep -q 'apache2'; then
+        echo "Installing apache2..."
+        apt-get install -y apache2
     fi
-    
-    ensure_directory "/home/$username/.ssh"
-    add_line_to_file "$ssh_key" "/home/$username/.ssh/authorized_keys"
-    chown -R "$username:$username" "/home/$username/.ssh"
-    chmod 700 "/home/$username/.ssh"
-    chmod 600 "/home/$username/.ssh/authorized_keys"
+    if ! dpkg -l | grep -q 'squid'; then
+        echo "Installing squid..."
+        apt-get install -y squid
+    fi
+    if ! dpkg -l | grep -q 'ufw'; then
+        echo "Installing ufw..."
+        apt-get install -y ufw
+    fi
 }
 
-# Function to configure network interface using netplan
-configure_netplan() {
-    local config_file="/etc/netplan/01-netcfg.yaml"
-    local new_config="
-        network:
-            version: 2
-            renderer: networkd
-            ethernets:
-                ens192:
-                    addresses: [192.168.16.21/24]
-                    gateway4: 192.168.16.2
-                    nameservers:
-                        addresses: [192.168.16.2]
-                        search: [home.arpa, localdomain]
-    "
-    echo "$new_config" > "$config_file"
-    netplan apply
+function check_netplan() {
+    echo -e "\nChecking netplan configuration..."
+    if ! grep -q '192.168.16.21/24' "$netplan_file"; then
+        echo "Updating netplan configuration..."
+        cat <<EOF >> "$netplan_file"
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      dhcp4: no
+      addresses:
+        - 192.168.16.21/24
+      gateway4: 192.168.16.2
+      nameservers:
+        addresses: [192.168.16.2]
+        search:
+          - home.arpa
+          - localdomain
+EOF
+        netplan apply
+    fi
 }
 
-# Function to configure firewall using ufw
-configure_firewall() {
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow ssh from 192.168.16.0/24 to any
-    ufw allow http
-    ufw allow 3128
-    ufw --force enable
+function check_hosts() {
+    echo -e "\nChecking /etc/hosts file..."
+    if ! grep -q '192.168.16.21 server1' "$hosts_file"; then
+        echo "Updating /etc/hosts file..."
+        echo "192.168.16.21 server1" >> "$hosts_file"
+    fi
+    if grep -q '192.168.16.11 server1' "$hosts_file"; then
+        echo "Removing old IP address from /etc/hosts file..."
+        sed -i '/192.168.16.11/d' "$hosts_file"
+    fi
 }
 
-# Function to install necessary packages
-install_packages() {
-    local packages=("apache2" "squid" "ufw")
+function check_firewall() {
+    echo -e "\nChecking firewall configuration..."
+    if ! ufw status | grep -q '22/tcp ALLOW IN'; then
+        echo "Allowing SSH on mgmt network..."
+        ufw allow from 192.168.16.0/24 to any port 22 proto tcp
+    fi
+    if ! ufw status | grep -q '80/tcp ALLOW IN'; then
+        echo "Allowing HTTP on both interfaces..."
+        ufw allow http
+    fi
+    if ! ufw status | grep -q '3128/tcp ALLOW IN'; then
+        echo "Allowing web proxy on both interfaces..."
+        ufw allow 3128/tcp
+    fi
+    if ! ufw status | grep -qw 'enabled'; then
+        echo "Enabling firewall..."
+        ufw enable
+    fi
+}
 
-    for pkg in "${packages[@]}"; do
-        if ! package_installed "$pkg"; then
-            apt-get -y install "$pkg"
+function check_users() {
+    echo -e "\nChecking user accounts..."
+    for user in dennis aubrey captain snibbles brownie scooter sandy perrier cindy tiger yoda; do
+        if id -u "$user" >/dev/null 2>&1; then
+            echo "Updating user account for $user..."
+            usermod -d /home/"$user" "$user"
+            usermod -s /bin/bash "$user"
+            if [ "$user" == "dennis" ]; then
+                echo "Adding sudo access for $user..."
+                usermod -aG sudo "$user"
+            fi
+            mkdir -p /home/"$user"/.ssh
+            chown "$user":"$user" /home/"$user"/.ssh
+            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm" >> "/home/$user/.ssh/authorized_keys"
+            echo "Adding user's public key to authorized_keys file..."
+            echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDL11t9vJjb82KzKO5zUJi8q5jvR2pCjszHZ5/DWsL1Qy7qYzJ6R0jmJoaZfrl3T2jBJrSz1nQy+HrQwXfNfKwVxHvh7RVi98bJzGK2lEsmvQJwUHvM6HKEqTcBk5v/1iXa15jCLY4g09fRyfYl1jf0xQ9gR3a4z6VZwJ85jP2r/KHhxG2xYH2NxFuhoXvTjJHMxTvNnqm+s7lLH05QBv0/74jx2nUJzY1Xq2vZG6w9hZbWq/gJjWxPm3G1WkXUqP5+QdR5Y2qCjzN+XrPfQ2jE6WVnD8OHwWgZm0gQ3FzpE9 +user-rsa-key >> /home/$user/.ssh/authorized_keys"
+        else
+            echo "Creating new user account for $user..."
+            adduser --home /home/"$user" --shell /bin/bash "$user"
+            if [ "$user" == "dennis" ]; then
+                echo "Adding sudo access for $user..."
+                adduser "$user" sudo
+            fi
+            mkdir -p /home/"$user"/.ssh
+            chown "$user":"$user" /home/"$user"/.ssh
+            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm" >> "/home/$user/.ssh/authorized_keys"
+            echo "Adding user's public key to authorized_keys file..."
+            echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDL11t9vJjb82KzKO5zUJi8q5jvR2pCjszHZ5/DWsL1Qy7qYzJ6R0jmJoaZfrl3T2jBJrSz1nQy+HrQwXfNfKwVxHvh7RVi98bJzGK2lEsmvQJwUHvM6HKEqTcBk5v/1iXa15jCLY4g09fRyfYl1jf0xQ9gR3a4z6VZwJ85jP2r/KHhxG2xYH2NxFuhoXvTjJHMxTvNnqm+s7lLH05QBv0/74jx2nUJzY1Xq2vZG6w9hZbWq/gJjWxPm3G1WkXUqP5+QdR5Y2qCjzN+XrPfQ2jE6WVnD8OHwWgZm0gQ3FzpE9 +user-rsa-key >> /home/$user/.ssh/authorized_keys"
         fi
     done
 }
 
-# Main function
-main() {
-    echo "=== Starting configuration ==="
+# Main
+echo -e "
+#  Server 1 Configuration Script #
+"
 
-    # Configure network interface
-    echo "--- Configuring network interface ---"
-    configure_netplan
-    echo "Network interface configured successfully"
+check_software
+check_netplan
+check_hosts
+check_firewall
+check_users
 
-    # Configure /etc/hosts
-    echo "--- Configuring /etc/hosts ---"
-    sed -i '/192.168.16.21/s/.*/192.168.16.21 server1/' /etc/hosts
-    echo "/etc/hosts configured successfully"
+echo-e "\n
 
-    # Install necessary packages
-    echo "--- Installing necessary packages ---"
-    install_packages
-    echo "Packages installed successfully"
-
-    # Configure firewall
-    echo "--- Configuring firewall ---"
-    configure_firewall
-    echo "Firewall configured successfully"
-
-    # Ensure user accounts and SSH keys
-    echo "--- Ensuring user accounts and SSH keys ---"
-    ensure_user "dennis" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm"
-    ensure_user "aubrey"
-    ensure_user "captain"
-    ensure_user "snibbles"
-    ensure_user "brownie"
-    ensure_user "scooter"
-    ensure_user "sandy"
-    ensure_user "perrier"
-    ensure_user "cindy"
-    ensure_user "tiger"
-    ensure_user "yoda"
-    echo "User accounts and SSH keys ensured successfully"
-
-    echo "=== Configuration completed ==="
-}
-
-# Execute main function
-main
+$(netplan apply && ip addr show eth0)
+$(cat /etc/hosts)
+$(ufw status)
+$(cat /etc/sudoers.d/dennis)
+$(cat /home/dennis/.ssh/authorized_keys)
+$(cat /etc/netplan/*.yaml)
+"
