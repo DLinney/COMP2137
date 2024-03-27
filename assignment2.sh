@@ -15,9 +15,6 @@ network:
       dhcp4: no
       addresses:
         - 192.168.16.21/24
-      gateway4: 192.168.16.2
-      nameservers:
-        addresses: [192.168.16.2]
         search:
           - home.arpa
           - localdomain
