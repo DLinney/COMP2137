@@ -1,102 +1,66 @@
-#!/bin/bash
-
-# Function to handle signals
-handle_signal() {
-    # Ignore TERM, HUP, and INT signals
-    trap '' TERM HUP INT
-}
-
-# Set signal trap
-trap handle_signal TERM HUP INT
+!/bin/bash
 
 # Function to log changes
-log_change() {
-    logger "configure-host.sh: $1"
-}
-
-# Function to update hostname
-update_hostname() {
-    local new_hostname="$1"
-    local old_hostname=$(hostname)
-
-    if [ "$new_hostname" != "$old_hostname" ]; then
-        echo "$new_hostname" > /etc/hostname
-        hostname "$new_hostname"
-        sed -i "s/^127.0.1.1\s*$old_hostname/127.0.1.1 $new_hostname/g" /etc/hosts
-        log_change "Changed hostname from $old_hostname to $new_hostname"
-        if [ "$verbose" = true ]; then
-            echo "Changed hostname from $old_hostname to $new_hostname"
-        fi
-    elif [ "$verbose" = true ]; then
-        echo "Hostname is already set to $new_hostname"
+log_changes() {
+    if [ "$VERBOSE" = true ]; then
+        echo "$1"
+    else
+        logger -t configure-host "$1"
     fi
 }
 
-# Function to update IP address
-update_ip_address() {
-    local new_ip="$1"
-    local interface=$(ip route show default | awk '/default/ {print $5}')
-    local old_ip=$(ip addr show "$interface" | awk '/inet / {print $2}' | cut -d'/' -f1)
+# Function to handle signals
+trap '' TERM HUP INT
 
-    if [ "$new_ip" != "$old_ip" ]; then
-        # Update netplan configuration
-        netplan set "$interface".addresses="[$new_ip/24]"
-        netplan apply
+# Default settings
+VERBOSE=false
+DESIRED_NAME="Assignment3"
+DESIRED_IP="192.168.16.4"
+DESIRED_NAME_HOSTENTRY="Assignment3"
+DESIRED_IP_HOSTENTRY="192.168.92.1"
 
-        # Update /etc/hosts
-        sed -i "s/^$old_ip\s*$(hostname)/127.0.1.1 $(hostname)/g" /etc/hosts
-        sed -i "/$old_ip/d" /etc/hosts
-        echo "$new_ip $(hostname)" >> /etc/hosts
-
-        log_change "Changed IP address for $interface from $old_ip to $new_ip"
-        if [ "$verbose" = true ]; then
-            echo "Changed IP address for $interface from $old_ip to $new_ip"
-        fi
-    elif [ "$verbose" = true ]; then
-        echo "IP address is already set to $new_ip"
-    fi
-}
-
-# Function to update /etc/hosts
-update_hosts_entry() {
-    local hostname="$1"
-    local ip_address="$2"
-    local entry="$ip_address $hostname"
-
-    if ! grep -q "$entry" /etc/hosts; then
-        echo "$entry" >> /etc/hosts
-        log_change "Added $entry to /etc/hosts"
-        if [ "$verbose" = true ]; then
-            echo "Added $entry to /etc/hosts"
-        fi
-    elif [ "$verbose" = true ]; then
-        echo "Entry $entry already exists in /etc/hosts"
-    fi
-}
-
-# Parse command-line arguments
-verbose=false
-while [ "$#" -gt 0 ]; do
-    case "$1" in
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
         -verbose)
-            verbose=true
-            ;;
-        -name)
-            update_hostname "$2"
+            VERBOSE=true
             shift
-            ;;
-        -ip)
-            update_ip_address "$2"
-            shift
-            ;;
-        -hostentry)
-            update_hosts_entry "$2" "$3"
-            shift 2
             ;;
         *)
             echo "Unknown option: $1"
             exit 1
             ;;
     esac
-    shift
 done
+
+# Configure host name
+CURRENT_NAME=$(hostname)
+if [ "$DESIRED_NAME" != "$CURRENT_NAME" ]; then
+    sudo sed -i "s/$CURRENT_NAME/$DESIRED_NAME/g" /etc/hosts /etc/hostname
+    log_changes "Hostname changed to $DESIRED_NAME"
+else
+    log_changes "Hostname already set to $DESIRED_NAME"
+fi
+
+# Configure IP address
+CURRENT_IP=$(hostname -I | awk '{print $1}')
+if [ "$DESIRED_IP" != "$CURRENT_IP" ]; then
+    sudo sed -i "s/$CURRENT_IP/$DESIRED_IP/g" /etc/hosts
+    sudo sed -i "s/addresses: \[ $CURRENT_IP/addresses: \[ $DESIRED_IP/g" /etc/netplan/*.yaml
+    sudo netplan apply
+    log_changes "IP address changed to $DESIRED_IP"
+else
+    log_changes "IP address already set to $DESIRED_IP"
+fi
+
+# Configure host entry
+if grep -q "$DESIRED_NAME_HOSTENTRY" /etc/hosts && grep -q "$DESIRED_IP_HOSTENTRY" /etc/hosts; then
+    log_changes "Host entry already exists for $DESIRED_NAME_HOSTENTRY with IP $DESIRED_IP_HOSTENTRY"
+else
+    echo "$DESIRED_IP_HOSTENTRY $DESIRED_NAME_HOSTENTRY" | sudo tee -a /etc/hosts > /dev/null
+    log_changes "Added host entry for $DESIRED_NAME_HOSTENTRY with IP $DESIRED_IP_HOSTENTRY"
+fi
+
+exit 0
+
